@@ -1,0 +1,167 @@
+# Azure Modern Data Platform - .gitignore
+
+# Terraform files
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+.terraform/
+.terraform.lock.hcl
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+terraform-outputs.json
+backend.hcl
+
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+
+# Azure CLI
+.azure/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# Databricks
+.databricks-connect
+databricks.ini
+.databrickscfg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.out
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# nyc test coverage
+.nyc_output
+
+# node_modules
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env
+
+# Sensitive or high-churn files
+.secrets/
+secrets.json
+credentials.json
+service-account-key.json
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Azure Functions
+bin
+obj
+appsettings.json
+local.settings.json
+.vscode/
+
+# Backup files
+*.bak
+*.backup
+
+# Test results
+test-results/
+TestResults/
+coverage.xml
+*.cover
+.coverage
+.pytest_cache/
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Kubernetes
+*.yaml.bak
+*.yml.bak
+
+# Monitoring and logging
+monitoring/logs/
+*.monitoring
+
+# Custom deployment artifacts
+deployment-artifacts/
+build-artifacts/
