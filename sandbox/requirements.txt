@@ -1,0 +1,55 @@
+# Azure Modern Data Platform - Sandbox Requirements
+# Python dependencies for local development environment
+
+# Core Data Processing
+pyspark==3.5.0
+delta-spark==2.4.0
+pandas==2.0.3
+numpy==1.24.3
+
+# Data Quality & Validation
+great-expectations==0.17.23
+pandera==0.16.1
+
+# Database Connectivity
+psycopg2-binary==2.9.7
+pymongo==4.5.0
+sqlalchemy==2.0.19
+
+# Cloud Storage Simulation
+boto3==1.28.25
+minio==7.1.16
+azure-storage-blob==12.17.0
+
+# Caching & Message Brokers
+redis==4.6.0
+
+# Development & Analysis
+jupyter==1.0.0
+jupyterlab==4.0.5
+ipykernel==6.25.1
+
+# Visualization
+matplotlib==3.7.2
+seaborn==0.12.2
+plotly==5.15.0
+
+# Web Frameworks (for custom dashboards)
+streamlit==1.25.0
+fastapi==0.101.1
+uvicorn==0.23.2
+
+# Workflow Orchestration
+apache-airflow==2.7.0
+
+# Monitoring & Logging
+prometheus-client==0.17.1
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+click==8.1.6
+
+# Testing
+pytest==7.4.0
+pytest-spark==0.6.0

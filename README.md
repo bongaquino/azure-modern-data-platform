@@ -27,7 +27,28 @@ This project demonstrates a comprehensive, fully automated Modern Data Architect
 
 ## 🚀 Quick Start
 
-### Prerequisites
+### Option 1: Local Sandbox (Recommended for Learning)
+Experience the complete platform locally without Azure costs:
+
+```bash
+# Navigate to sandbox
+cd sandbox
+
+# One-command setup and demo
+./quick-start-sandbox.sh
+```
+
+**Sandbox Features:**
+- Complete Spark environment with Delta Lake
+- Medallion architecture demonstration
+- Data quality monitoring
+- Interactive Jupyter notebooks
+- Monitoring dashboards (Grafana + Prometheus)
+- MinIO for cloud storage simulation
+
+### Option 2: Azure Deployment
+
+#### Prerequisites
 - Azure subscription with appropriate permissions
 - Terraform >= 1.6.0
 - Azure CLI >= 2.50.0
