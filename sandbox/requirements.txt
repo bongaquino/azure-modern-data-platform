@@ -35,7 +35,7 @@ seaborn==0.12.2
 plotly==5.15.0
 
 # Web Frameworks (for custom dashboards)
-streamlit==1.25.0
+streamlit==1.37.0
 fastapi==0.101.1
 uvicorn==0.23.2
 
