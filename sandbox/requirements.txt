@@ -46,7 +46,7 @@ apache-airflow==2.7.0
 prometheus-client==0.17.1
 
 # Utilities
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 requests==2.31.0
 click==8.1.6
 
