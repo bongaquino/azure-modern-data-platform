@@ -165,3 +165,15 @@ monitoring/logs/
 # Custom deployment artifacts
 deployment-artifacts/
 build-artifacts/
+
+# Python virtual environment
+.venv/
+
+# Generated sandbox data (Delta tables, Parquet, CSV)
+sandbox/data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

@@ -1,352 +1,283 @@
-# Medallion Architecture Demo - Local Sandbox
-# Demonstrates Bronze → Silver → Gold data pipeline using local Spark
+"""
+Azure Modern Data Platform — Medallion Architecture Demo
+Bronze → Silver → Gold using local PySpark + Delta Lake
+Uses generated retail sales data (500 good + 25 bad records)
+"""
 
 import os
-import sys
-from datetime import datetime, timedelta
 import logging
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import (
+    col, sum, avg, count, countDistinct, max, min,
+    current_timestamp, lit, when, to_date, round as spark_round,
+    date_format
+)
+from pyspark.sql.types import (
+    StructType, StructField, StringType, DoubleType,
+    IntegerType, DecimalType
+)
+from delta import configure_spark_with_delta_pip
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    datefmt="%H:%M:%S"
+)
+log = logging.getLogger(__name__)
 
-def create_spark_session():
-    """Create Spark session with Delta Lake support"""
-    try:
-        from pyspark.sql import SparkSession
-        from pyspark.sql.functions import *
-        from pyspark.sql.types import *
-        
-        spark = SparkSession.builder \
-            .appName("MedallionArchitectureDemo") \
-            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
-            .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog") \
-            .config("spark.master", "local[*]") \
-            .config("spark.sql.adaptive.enabled", "true") \
-            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-            .getOrCreate()
-        
-        logger.info("✅ Spark session created successfully")
-        return spark
-        
-    except ImportError as e:
-        logger.error(f"Failed to import required libraries: {e}")
-        logger.info("Installing required packages...")
-        os.system("pip install pyspark==3.5.0 delta-spark==2.4.0")
-        return create_spark_session()
+# ── paths ────────────────────────────────────────────────────────────────────
+BASE        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RAW_PATH    = os.path.join(BASE, "data/raw/sales")
+BRONZE_PATH = os.path.join(BASE, "data/bronze/sales")
+SILVER_PATH = os.path.join(BASE, "data/silver/sales")
+GOLD_SEG    = os.path.join(BASE, "data/gold/by_segment")
+GOLD_REGION = os.path.join(BASE, "data/gold/by_region")
+GOLD_TREND  = os.path.join(BASE, "data/gold/monthly_trend")
+QUARANTINE  = os.path.join(BASE, "data/quarantine/sales")
 
-def generate_sample_data(spark):
-    """Generate sample data for demonstration"""
-    logger.info("🔧 Generating sample data...")
-    
-    # Sample sales transactions
-    sample_data = [
-        ("TXN001", "CUST001", "PROD001", 299.99, "2024-01-15", "2024-01-15 10:30:00", "New York", "Credit Card"),
-        ("TXN002", "CUST002", "PROD002", 149.99, "2024-01-15", "2024-01-15 11:45:00", "California", "Debit Card"),
-        ("TXN003", "CUST001", "PROD003", 599.99, "2024-01-16", "2024-01-16 09:15:00", "New York", "Credit Card"),
-        ("TXN004", "CUST003", "PROD001", 299.99, "2024-01-16", "2024-01-16 14:20:00", "Texas", "Cash"),
-        ("TXN005", "CUST002", "PROD004", 89.99, "2024-01-17", "2024-01-17 16:00:00", "California", "Credit Card"),
-        ("TXN006", "CUST004", "PROD001", 299.99, "2024-01-17", "2024-01-17 18:30:00", "Florida", "Credit Card"),
-        ("TXN007", "CUST001", "PROD005", 199.99, "2024-01-18", "2024-01-18 12:15:00", "New York", "Debit Card"),
-        ("TXN008", "CUST005", "PROD002", 149.99, "2024-01-18", "2024-01-18 15:45:00", "Illinois", "Cash"),
-        ("TXN009", "CUST003", "PROD006", 449.99, "2024-01-19", "2024-01-19 11:00:00", "Texas", "Credit Card"),
-        ("TXN010", "CUST002", "PROD001", 299.99, "2024-01-19", "2024-01-19 14:30:00", "California", "Credit Card")
-    ]
-    
-    schema = StructType([
-        StructField("transaction_id", StringType(), True),
-        StructField("customer_id", StringType(), True),
-        StructField("product_id", StringType(), True),
-        StructField("sale_amount", DoubleType(), True),
-        StructField("sale_date", StringType(), True),
-        StructField("sale_timestamp", StringType(), True),
-        StructField("store_location", StringType(), True),
-        StructField("payment_method", StringType(), True)
-    ])
-    
-    from pyspark.sql.types import StructType, StructField, StringType, DoubleType
-    from pyspark.sql.functions import col, current_timestamp, lit
-    
-    # Create DataFrame
-    raw_df = spark.createDataFrame(sample_data, schema)
-    
-    # Add some data quality issues for demonstration
-    # Add null values and invalid data
-    quality_issues_data = [
-        ("TXN011", None, "PROD001", 299.99, "2024-01-20", "2024-01-20 10:00:00", "Nevada", "Credit Card"),  # Missing customer_id
-        ("TXN012", "CUST006", "PROD002", -50.00, "2024-01-20", "2024-01-20 11:00:00", "Oregon", "Debit Card"),  # Negative amount
-        ("TXN013", "CUST007", "PROD003", None, "2024-01-20", "2024-01-20 12:00:00", "Washington", "Cash"),  # Missing amount
-    ]
-    
-    quality_df = spark.createDataFrame(quality_issues_data, schema)
-    
-    # Combine clean and problematic data
-    combined_df = raw_df.union(quality_df)
-    
-    logger.info(f"✅ Generated {combined_df.count()} sample records")
-    return combined_df
+for p in [BRONZE_PATH, SILVER_PATH, GOLD_SEG, GOLD_REGION, GOLD_TREND, QUARANTINE]:
+    os.makedirs(p, exist_ok=True)
 
-def bronze_layer_processing(spark, raw_df):
-    """Bronze Layer: Raw data ingestion with minimal processing"""
-    logger.info("🥉 Processing Bronze Layer...")
-    
-    from pyspark.sql.functions import current_timestamp, lit, input_file_name
-    
-    # Bronze layer: Add metadata columns
-    bronze_df = raw_df \
-        .withColumn("ingestion_timestamp", current_timestamp()) \
-        .withColumn("source_system", lit("sample_data_generator")) \
-        .withColumn("batch_id", lit("BATCH_001")) \
-        .withColumn("source_file", lit("sample_data.csv"))
-    
-    # Create bronze directory if it doesn't exist
-    bronze_path = "data/bronze/sales"
-    os.makedirs(bronze_path, exist_ok=True)
-    
-    # Write to bronze layer (Parquet for simplicity in local mode)
-    bronze_df.coalesce(1).write \
-        .mode("overwrite") \
-        .parquet(bronze_path)
-    
-    logger.info(f"✅ Bronze layer created with {bronze_df.count()} records")
-    logger.info(f"   Saved to: {bronze_path}")
-    
-    # Show sample data
-    print("\n📊 Bronze Layer Sample:")
-    bronze_df.show(5, truncate=False)
-    
-    return bronze_df
 
-def silver_layer_processing(spark):
-    """Silver Layer: Data cleaning and validation"""
-    logger.info("🥈 Processing Silver Layer...")
-    
-    from pyspark.sql.functions import col, when, isnan, isnull, current_timestamp, lit
-    
-    # Read from bronze layer
-    bronze_path = "data/bronze/sales"
-    bronze_df = spark.read.parquet(bronze_path)
-    
-    # Data cleaning and validation rules
-    silver_df = bronze_df \
-        .filter(col("transaction_id").isNotNull()) \
-        .filter(col("customer_id").isNotNull()) \
-        .filter(col("sale_amount").isNotNull()) \
-        .filter(col("sale_amount") > 0) \
-        .withColumn("sale_amount", col("sale_amount").cast("decimal(10,2)")) \
-        .withColumn("sale_date", to_date(col("sale_date"), "yyyy-MM-dd")) \
-        .withColumn("sale_timestamp", to_timestamp(col("sale_timestamp"), "yyyy-MM-dd HH:mm:ss")) \
-        .withColumn("processed_timestamp", current_timestamp()) \
-        .withColumn("data_quality_score", lit(100.0)) \
-        .withColumn("record_status", lit("VALID"))
-    
-    # Identify and handle quarantine records
-    quarantine_df = bronze_df \
+# ── spark session ─────────────────────────────────────────────────────────────
+def create_spark():
+    builder = (
+        SparkSession.builder
+        .appName("MedallionArchitectureDemo")
+        .master("local[*]")
+        .config("spark.sql.extensions",
+                "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        .config("spark.driver.memory", "2g")
+        # suppress verbose Spark logs
+        .config("spark.log.level", "WARN")
+    )
+    spark = configure_spark_with_delta_pip(builder).getOrCreate()
+    spark.sparkContext.setLogLevel("WARN")
+    log.info("Spark + Delta Lake ready  (local[*])")
+    return spark
+
+
+# ── BRONZE ────────────────────────────────────────────────────────────────────
+def bronze(spark):
+    log.info("── BRONZE  reading raw CSVs ──")
+
+    raw = (
+        spark.read
+        .option("header", "true")
+        .option("inferSchema", "true")
+        .csv(RAW_PATH)
+    )
+
+    bronze_df = (
+        raw
+        .withColumn("ingestion_timestamp", current_timestamp())
+        .withColumn("source_system",       lit("pos_system_v2"))
+        .withColumn("layer",               lit("bronze"))
+    )
+
+    bronze_df.write.format("delta").mode("overwrite").save(BRONZE_PATH)
+
+    total = bronze_df.count()
+    log.info(f"Bronze  {total} rows written → {BRONZE_PATH}")
+
+    print("\n╔══════════════════════════════════╗")
+    print("║  BRONZE — raw ingestion sample   ║")
+    print("╚══════════════════════════════════╝")
+    bronze_df.select(
+        "sale_id","sale_date","customer_id","customer_segment",
+        "sale_amount","region","_bad_reason"
+    ).show(8, truncate=False)
+
+    return total
+
+
+# ── SILVER ────────────────────────────────────────────────────────────────────
+def silver(spark):
+    log.info("── SILVER  apply quality rules ──")
+
+    bronze_df = spark.read.format("delta").load(BRONZE_PATH)
+
+    # rows that PASS quality checks
+    silver_df = (
+        bronze_df
+        .filter(col("sale_amount") > 0)
+        .filter(col("customer_id").isNotNull())
+        .withColumn("sale_amount",          col("sale_amount").cast(DecimalType(12, 2)))
+        .withColumn("sale_date",            to_date(col("sale_date"), "yyyy-MM-dd"))
+        .withColumn("processed_timestamp",  current_timestamp())
+        .withColumn("record_status",        lit("VALID"))
+        .drop("_bad_reason")
+    )
+
+    # rows that FAIL — quarantined
+    quarantine_df = (
+        bronze_df
         .filter(
-            col("transaction_id").isNull() | 
-            col("customer_id").isNull() | 
-            col("sale_amount").isNull() | 
-            (col("sale_amount") <= 0)
-        ) \
-        .withColumn("quarantine_reason", 
-                   when(col("transaction_id").isNull(), "Missing transaction ID")
-                   .when(col("customer_id").isNull(), "Missing customer ID")
-                   .when(col("sale_amount").isNull(), "Missing sale amount")
-                   .when(col("sale_amount") <= 0, "Invalid sale amount")
-                   .otherwise("Unknown validation error")) \
+            (col("sale_amount") <= 0) | col("customer_id").isNull()
+        )
+        .withColumn(
+            "quarantine_reason",
+            when(col("sale_amount") <= 0,    "negative_sale_amount")
+            .when(col("customer_id").isNull(), "null_customer_id")
+            .otherwise("unknown")
+        )
         .withColumn("quarantine_timestamp", current_timestamp())
-    
-    # Create silver and quarantine directories
-    silver_path = "data/silver/sales"
-    quarantine_path = "data/quarantine/sales"
-    os.makedirs(silver_path, exist_ok=True)
-    os.makedirs(quarantine_path, exist_ok=True)
-    
-    # Write to silver layer
-    silver_df.coalesce(1).write \
-        .mode("overwrite") \
-        .parquet(silver_path)
-    
-    # Write quarantine records
-    if quarantine_df.count() > 0:
-        quarantine_df.coalesce(1).write \
-            .mode("overwrite") \
-            .parquet(quarantine_path)
-    
-    logger.info(f"✅ Silver layer created with {silver_df.count()} valid records")
-    logger.info(f"   Quarantined {quarantine_df.count()} invalid records")
-    logger.info(f"   Saved to: {silver_path}")
-    
-    # Show sample data
-    print("\n📊 Silver Layer Sample:")
-    silver_df.show(5, truncate=False)
-    
-    if quarantine_df.count() > 0:
-        print("\n⚠️ Quarantined Records:")
-        quarantine_df.select("transaction_id", "customer_id", "sale_amount", "quarantine_reason").show(truncate=False)
-    
-    return silver_df
+    )
 
-def gold_layer_processing(spark):
-    """Gold Layer: Business aggregations and analytics"""
-    logger.info("🥇 Processing Gold Layer...")
-    
-    from pyspark.sql.functions import col, sum, avg, count, countDistinct, max, min, current_timestamp
-    
-    # Read from silver layer
-    silver_path = "data/silver/sales"
-    silver_df = spark.read.parquet(silver_path)
-    
-    # Business aggregation 1: Daily sales summary
-    daily_sales = silver_df \
-        .groupBy("sale_date", "store_location") \
+    silver_df.write.format("delta").mode("overwrite").save(SILVER_PATH)
+    quarantine_df.write.format("delta").mode("overwrite").save(QUARANTINE)
+
+    valid_count = silver_df.count()
+    bad_count   = quarantine_df.count()
+    quality_pct = round(valid_count / (valid_count + bad_count) * 100, 1)
+
+    print("\n╔══════════════════════════════════════════════════╗")
+    print("║  SILVER — quality enforcement results            ║")
+    print("╚══════════════════════════════════════════════════╝")
+    print(f"  ✓ Valid records passed to Silver : {valid_count}")
+    print(f"  ✗ Bad records sent to Quarantine : {bad_count}")
+    print(f"  Data quality rate                : {quality_pct}%\n")
+
+    print("  Quarantined records breakdown:")
+    quarantine_df.groupBy("quarantine_reason").count().show(truncate=False)
+
+    return valid_count, bad_count
+
+
+# ── GOLD ──────────────────────────────────────────────────────────────────────
+def gold(spark):
+    log.info("── GOLD  build business aggregates ──")
+
+    silver_df = spark.read.format("delta").load(SILVER_PATH)
+
+    # ── 1. Revenue by customer segment ───────────────────────────────────────
+    by_segment = (
+        silver_df
+        .groupBy("customer_segment")
         .agg(
-            count("transaction_id").alias("transaction_count"),
-            sum("sale_amount").alias("total_sales"),
-            avg("sale_amount").alias("avg_transaction_value"),
-            max("sale_amount").alias("max_transaction_value"),
-            min("sale_amount").alias("min_transaction_value"),
-            countDistinct("customer_id").alias("unique_customers"),
-            countDistinct("product_id").alias("unique_products")
-        ) \
-        .withColumn("sales_per_customer", col("total_sales") / col("unique_customers")) \
-        .withColumn("processed_timestamp", current_timestamp()) \
-        .orderBy("sale_date", "store_location")
-    
-    # Business aggregation 2: Customer analytics
-    customer_analytics = silver_df \
-        .groupBy("customer_id") \
-        .agg(
-            count("transaction_id").alias("total_transactions"),
-            sum("sale_amount").alias("lifetime_value"),
-            avg("sale_amount").alias("avg_order_value"),
-            max("sale_date").alias("last_purchase_date"),
-            min("sale_date").alias("first_purchase_date"),
-            countDistinct("product_id").alias("unique_products_purchased"),
-            countDistinct("store_location").alias("unique_locations_visited")
-        ) \
-        .withColumn("customer_tenure_days", 
-                   datediff(col("last_purchase_date"), col("first_purchase_date"))) \
-        .withColumn("customer_value_segment",
-                   when(col("lifetime_value") >= 1000, "High Value")
-                   .when(col("lifetime_value") >= 500, "Medium Value")
-                   .otherwise("Low Value")) \
-        .withColumn("processed_timestamp", current_timestamp()) \
-        .orderBy(col("lifetime_value").desc())
-    
-    # Business aggregation 3: Product performance
-    product_performance = silver_df \
-        .groupBy("product_id") \
-        .agg(
-            count("transaction_id").alias("total_sales_count"),
-            sum("sale_amount").alias("total_revenue"),
-            avg("sale_amount").alias("avg_sale_price"),
-            countDistinct("customer_id").alias("unique_customers"),
-            countDistinct("store_location").alias("unique_locations")
-        ) \
-        .withColumn("revenue_per_customer", col("total_revenue") / col("unique_customers")) \
-        .withColumn("market_penetration", col("unique_locations") / lit(5.0))  # Assuming 5 total locations \
-        .withColumn("processed_timestamp", current_timestamp()) \
+            spark_round(sum("sale_amount"),         2).alias("total_revenue"),
+            spark_round(avg("sale_amount"),         2).alias("avg_order_value"),
+            count("sale_id").alias("total_orders"),
+            countDistinct("customer_id").alias("unique_customers")
+        )
+        .withColumn(
+            "revenue_per_customer",
+            spark_round(col("total_revenue") / col("unique_customers"), 2)
+        )
         .orderBy(col("total_revenue").desc())
-    
-    # Create gold directories
-    gold_daily_path = "data/gold/daily_sales"
-    gold_customer_path = "data/gold/customer_analytics"
-    gold_product_path = "data/gold/product_performance"
-    
-    os.makedirs(gold_daily_path, exist_ok=True)
-    os.makedirs(gold_customer_path, exist_ok=True)
-    os.makedirs(gold_product_path, exist_ok=True)
-    
-    # Write to gold layer
-    daily_sales.coalesce(1).write.mode("overwrite").parquet(gold_daily_path)
-    customer_analytics.coalesce(1).write.mode("overwrite").parquet(gold_customer_path)
-    product_performance.coalesce(1).write.mode("overwrite").parquet(gold_product_path)
-    
-    logger.info(f"✅ Gold layer created with {daily_sales.count()} daily summaries")
-    logger.info(f"   Customer analytics: {customer_analytics.count()} customers")
-    logger.info(f"   Product performance: {product_performance.count()} products")
-    
-    # Show sample data
-    print("\n📊 Gold Layer - Daily Sales Summary:")
-    daily_sales.show(10, truncate=False)
-    
-    print("\n📊 Gold Layer - Customer Analytics:")
-    customer_analytics.show(5, truncate=False)
-    
-    print("\n📊 Gold Layer - Product Performance:")
-    product_performance.show(5, truncate=False)
-    
-    return daily_sales, customer_analytics, product_performance
+    )
 
-def demonstrate_data_quality_monitoring(spark):
-    """Demonstrate data quality monitoring capabilities"""
-    logger.info("🔍 Demonstrating Data Quality Monitoring...")
-    
-    # Read data from different layers
-    bronze_df = spark.read.parquet("data/bronze/sales")
-    silver_df = spark.read.parquet("data/silver/sales")
-    
-    # Calculate data quality metrics
-    total_bronze_records = bronze_df.count()
-    total_silver_records = silver_df.count()
-    quarantined_records = total_bronze_records - total_silver_records
-    data_quality_rate = (total_silver_records / total_bronze_records) * 100
-    
-    print(f"\n📈 Data Quality Metrics:")
-    print(f"   Total Raw Records (Bronze): {total_bronze_records}")
-    print(f"   Valid Records (Silver): {total_silver_records}")
-    print(f"   Quarantined Records: {quarantined_records}")
-    print(f"   Data Quality Rate: {data_quality_rate:.2f}%")
-    
-    # Demonstrate data lineage
-    print(f"\n🔗 Data Lineage Summary:")
-    print(f"   Bronze → Silver: {total_bronze_records} → {total_silver_records} records")
-    print(f"   Data Loss: {quarantined_records} records ({((quarantined_records/total_bronze_records)*100):.2f}%)")
-    
-    logger.info("✅ Data quality monitoring complete")
+    by_segment.write.format("delta").mode("overwrite").save(GOLD_SEG)
 
+    print("\n╔══════════════════════════════════════════════════════════════╗")
+    print("║  GOLD — Revenue by Customer Segment                         ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    by_segment.show(truncate=False)
+
+    # ── 2. Revenue by region ─────────────────────────────────────────────────
+    by_region = (
+        silver_df
+        .groupBy("region")
+        .agg(
+            spark_round(sum("sale_amount"),   2).alias("total_revenue"),
+            count("sale_id").alias("total_orders"),
+            countDistinct("customer_id").alias("unique_customers"),
+            spark_round(avg("sale_amount"),   2).alias("avg_order_value")
+        )
+        .orderBy(col("total_revenue").desc())
+    )
+
+    by_region.write.format("delta").mode("overwrite").save(GOLD_REGION)
+
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║  GOLD — Revenue by Region                                    ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    by_region.show(truncate=False)
+
+    # ── 3. Monthly revenue trend ─────────────────────────────────────────────
+    monthly = (
+        silver_df
+        .withColumn("month", date_format("sale_date", "yyyy-MM"))
+        .groupBy("month")
+        .agg(
+            spark_round(sum("sale_amount"), 2).alias("monthly_revenue"),
+            count("sale_id").alias("orders"),
+            countDistinct("customer_id").alias("unique_customers")
+        )
+        .orderBy("month")
+    )
+
+    monthly.write.format("delta").mode("overwrite").save(GOLD_TREND)
+
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║  GOLD — Monthly Revenue Trend (Jan–May 2025)                 ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    monthly.show(truncate=False)
+
+
+# ── DELTA FEATURES ────────────────────────────────────────────────────────────
+def delta_features(spark):
+    print("\n╔══════════════════════════════════════════════════════════════╗")
+    print("║  DELTA LAKE FEATURES — Time Travel & History                 ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+
+    # Table history
+    spark.sql(f"DESCRIBE HISTORY delta.`{SILVER_PATH}`") \
+         .select("version","timestamp","operation","operationMetrics") \
+         .show(5, truncate=False)
+
+    # Time travel — read version 0 (original write)
+    v0_count = (
+        spark.read.format("delta")
+        .option("versionAsOf", 0)
+        .load(SILVER_PATH)
+        .count()
+    )
+    print(f"  Time Travel  VERSION AS OF 0 → {v0_count} rows  (same as current, only 1 write so far)")
+    print("  In production: VERSION AS OF lets you query any historical snapshot.")
+
+
+# ── SUMMARY ───────────────────────────────────────────────────────────────────
+def summary(bronze_total, silver_valid, silver_bad):
+    quality_pct = round(silver_valid / bronze_total * 100, 1)
+    print("\n" + "═" * 62)
+    print("  MEDALLION PIPELINE — RUN SUMMARY")
+    print("═" * 62)
+    print(f"  Bronze  (raw ingested)    : {bronze_total} rows")
+    print(f"  Silver  (passed quality)  : {silver_valid} rows")
+    print(f"  Quarantine (rejected)     : {silver_bad} rows")
+    print(f"  Data quality rate         : {quality_pct}%")
+    print(f"  Gold tables written       : by_segment, by_region, monthly_trend")
+    print("═" * 62)
+    print("\n  Delta Lake paths:")
+    print(f"    Bronze    → {BRONZE_PATH}")
+    print(f"    Silver    → {SILVER_PATH}")
+    print(f"    Gold      → {os.path.dirname(GOLD_SEG)}")
+    print(f"    Quarantine→ {QUARANTINE}")
+    print("\n  Done.\n")
+
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
-    """Main function to run the medallion architecture demo"""
-    print("=" * 80)
-    print("🚀 Azure Modern Data Platform - Medallion Architecture Demo")
-    print("   Local Sandbox Environment")
-    print("=" * 80)
-    
-    try:
-        # Create Spark session
-        spark = create_spark_session()
-        
-        # Generate sample data
-        raw_data = generate_sample_data(spark)
-        
-        # Process through medallion layers
-        bronze_df = bronze_layer_processing(spark, raw_data)
-        silver_df = silver_layer_processing(spark)
-        gold_results = gold_layer_processing(spark)
-        
-        # Demonstrate data quality monitoring
-        demonstrate_data_quality_monitoring(spark)
-        
-        print("\n" + "=" * 80)
-        print("✅ Medallion Architecture Demo Complete!")
-        print("=" * 80)
-        print("\nData Location Summary:")
-        print("  • Bronze Layer: data/bronze/sales")
-        print("  • Silver Layer: data/silver/sales")
-        print("  • Gold Layer: data/gold/daily_sales, customer_analytics, product_performance")
-        print("  • Quarantine: data/quarantine/sales")
-        print("\nNext Steps:")
-        print("  1. Explore the generated data files")
-        print("  2. Run the Jupyter notebook for interactive analysis")
-        print("  3. Set up monitoring dashboards in Grafana")
-        print("  4. Experiment with Delta Lake features")
-        
-    except Exception as e:
-        logger.error(f"Demo failed: {str(e)}")
-        raise
-    finally:
-        spark.stop()
+    print("═" * 62)
+    print("  Azure Modern Data Platform — Medallion Architecture Demo")
+    print("  Local Sandbox  |  PySpark + Delta Lake  |  local[*]")
+    print("═" * 62 + "\n")
+
+    spark = create_spark()
+
+    bronze_total            = bronze(spark)
+    silver_valid, silver_bad = silver(spark)
+    gold(spark)
+    delta_features(spark)
+    summary(bronze_total, silver_valid, silver_bad)
+
+    spark.stop()
+
 
 if __name__ == "__main__":
     main()
